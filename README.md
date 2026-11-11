@@ -6,8 +6,9 @@ Build an iPhone app that recognises a printed image and places a 3D model on top
 
 | File | What it is |
 | --- | --- |
-| [`Assets/Scripts/MarkerSpawner.cs`](Assets/Scripts/MarkerSpawner.cs) | The script that spawns a prefab on each marker |
-| [`Markers/ar_marker.png`](Markers/ar_marker.png) | A ready-made black-and-white marker to print |
+| [`Scripts/MarkerSpawner.cs`](Scripts/MarkerSpawner.cs) | The script that spawns a prefab on each marker |
+| [`Markers/`](Markers/) | Six ready-made black-and-white markers to print (`ar_marker.png`, `ar_marker_2.png` … `ar_marker_6.png`) |
+| [`PortalAndWanderer.md`](PortalAndWanderer.md) | Extra guide: portal holes and wandering creatures |
 
 **Before you start you need:**
 
@@ -59,7 +60,7 @@ Disable rather than delete, so you can switch the demo parts back on later. Chan
 
 ## Part 3: Add marker images
 
-A marker tracks well when it is high contrast, full of sharp corners, not symmetrical and not repetitive. Plain logos, smooth gradients and grid patterns track badly. You can use [`Markers/ar_marker.png`](Markers/ar_marker.png) from this repo.
+A marker tracks well when it is high contrast, full of sharp corners, not symmetrical and not repetitive. Plain logos, smooth gradients and grid patterns track badly. You can use any of the markers in [`Markers/`](Markers/) from this repo.
 
 1. Drag your marker image (PNG or JPG) into the **Project** window.
 2. **Assets → Create → XR → Reference Image Library**. Name it `MarkerLibrary`.
@@ -88,9 +89,10 @@ If the model is pink, convert its materials to URP: **Edit → Rendering → Mat
 
 **Add the script**
 
-Copy [`Assets/Scripts/MarkerSpawner.cs`](Assets/Scripts/MarkerSpawner.cs) into your project's `Assets` folder (the file name must match the class name):
+Copy [`Scripts/MarkerSpawner.cs`](Scripts/MarkerSpawner.cs) into your project's `Assets` folder (the file name must match the class name):
 
 ```csharp
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
@@ -100,6 +102,9 @@ public class MarkerSpawner : MonoBehaviour
     [SerializeField] ARTrackedImageManager manager;
     [SerializeField] GameObject[] prefabs;      // names must match reference image names
     [SerializeField] bool scaleToImageWidth = true;
+
+    // Last known "is the marker visible" for each image, so we only react to changes.
+    readonly Dictionary<TrackableId, bool> visibleState = new Dictionary<TrackableId, bool>();
 
     void OnEnable()  => manager.trackablesChanged.AddListener(OnChanged);
     void OnDisable() => manager.trackablesChanged.RemoveListener(OnChanged);
@@ -116,12 +121,34 @@ public class MarkerSpawner : MonoBehaviour
             }
             var go = Instantiate(prefab, img.transform);
             if (scaleToImageWidth) go.transform.localScale = Vector3.one * img.size.x;
+            visibleState[img.trackableId] = true;
         }
 
         foreach (var img in args.updated)
         {
             bool visible = img.trackingState == TrackingState.Tracking;
-            foreach (Transform child in img.transform) child.gameObject.SetActive(visible);
+
+            // On a real device the image's size estimate can change after it's
+            // first detected, so keep the content matched to the paper.
+            if (scaleToImageWidth && visible)
+                foreach (Transform child in img.transform)
+                    child.localScale = Vector3.one * img.size.x;
+
+            // Only do something when visibility actually changes.
+            if (visibleState.TryGetValue(img.trackableId, out bool wasVisible) && wasVisible == visible)
+                continue;
+            visibleState[img.trackableId] = visible;
+
+            foreach (Transform child in img.transform)
+            {
+                // Prefabs with a listener (like BirdWanderer) handle it themselves,
+                // e.g. flying away. Everything else is just hidden/shown.
+                var listeners = child.GetComponentsInChildren<IMarkerTrackingListener>(true);
+                if (listeners.Length > 0)
+                    foreach (var listener in listeners) listener.SetMarkerTracked(visible);
+                else
+                    child.gameObject.SetActive(visible);
+            }
         }
     }
 }
@@ -132,7 +159,7 @@ public class MarkerSpawner : MonoBehaviour
 3. Add your prefabs to the **Prefabs** list.
 4. Leave **Scale To Image Width** ticked if your prefabs are built 1 unit wide.
 
-**What the script does:** when a marker is first seen, it finds the prefab with the same name, places it on the marker, and scales it to the printed width. When the marker leaves view, it hides the model.
+**What the script does:** when a marker is first seen, it finds the prefab with the same name, places it on the marker, and scales it to the printed width. It keeps the scale matched to the paper as the phone refines its size estimate. When the marker leaves view, it hides the model. Prefabs with a script that implements `IMarkerTrackingListener` (such as `BirdWanderer`) are told instead, so they can react in their own way, for example by flying off.
 
 ## Part 5: Test in the editor with XR Simulation
 
